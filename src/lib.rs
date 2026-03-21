@@ -69,9 +69,9 @@ impl Default for Client {
     }
 }
 
-/// Send an `http::Request<Vec<u8>>` via wasip3 and return `http::Response<Body>`.
+/// Send an `http::Request<Bytes>` via wasip3 and return `http::Response<Body>`.
 ///
 /// Low-level function. Prefer `Client` builder for ergonomic usage.
-pub async fn send(request: http::Request<Vec<u8>>) -> Result<http::Response<Body>, Error> {
+pub async fn send(request: http::Request<bytes::Bytes>) -> Result<http::Response<Body>, Error> {
     request::send_raw(request, None).await
 }

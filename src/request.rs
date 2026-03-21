@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use wasip3::http::types::{
     ErrorCode, Fields, Request, RequestOptions, Response as WasiResponse, Scheme,
@@ -12,7 +13,7 @@ pub struct RequestBuilder {
     method: Method,
     url: String,
     headers: HeaderMap,
-    body: Option<Vec<u8>>,
+    body: Option<Bytes>,
     timeout: Option<std::time::Duration>,
     redirect_limit: u8,
 }
@@ -47,16 +48,16 @@ impl RequestBuilder {
         self
     }
 
-    /// Set raw body bytes.
-    pub fn body(mut self, body: Vec<u8>) -> Self {
-        self.body = Some(body);
+    /// Set request body.
+    pub fn body(mut self, body: impl Into<Bytes>) -> Self {
+        self.body = Some(body.into());
         self
     }
 
     /// Set JSON body. Automatically sets `Content-Type: application/json`.
     pub fn json<T: serde::Serialize>(mut self, value: &T) -> Self {
         if let Ok(bytes) = serde_json::to_vec(value) {
-            self.body = Some(bytes);
+            self.body = Some(Bytes::from(bytes));
             self.headers.insert(
                 http::header::CONTENT_TYPE,
                 HeaderValue::from_static("application/json"),
@@ -106,7 +107,7 @@ impl RequestBuilder {
             let req_body = if redirects == 0 {
                 body.clone().unwrap_or_default()
             } else if method == Method::GET || method == Method::HEAD {
-                Vec::new()
+                Bytes::new()
             } else {
                 original_body.clone().unwrap_or_default()
             };
@@ -158,9 +159,9 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
         .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")))
 }
 
-/// Send an `http::Request<Vec<u8>>` over wasip3 HTTP transport (no redirect handling).
+/// Send an `http::Request` over wasip3 HTTP transport (no redirect handling).
 pub(crate) async fn send_raw(
-    request: http::Request<Vec<u8>>,
+    request: http::Request<Bytes>,
     timeout: Option<std::time::Duration>,
 ) -> Result<http::Response<Body>, Error> {
     let (parts, body) = request.into_parts();
@@ -193,7 +194,7 @@ pub(crate) async fn send_raw(
     } else {
         let (mut writer, reader) = wasip3::wit_stream::new::<u8>();
         wit_bindgen::spawn(async move {
-            writer.write_all(body).await;
+            writer.write_all(body.to_vec()).await;
         });
         Some(reader)
     };
