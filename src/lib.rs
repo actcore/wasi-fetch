@@ -19,6 +19,9 @@ pub use body::Body;
 pub use error::Error;
 pub use request::RequestBuilder;
 
+static QUERY: std::sync::LazyLock<http::Method> =
+    std::sync::LazyLock::new(|| http::Method::from_bytes(b"QUERY").expect("valid method"));
+
 /// Stateless HTTP client.
 pub struct Client;
 
@@ -49,6 +52,10 @@ impl Client {
 
     pub fn head(&self, url: &str) -> RequestBuilder {
         RequestBuilder::new(http::Method::HEAD, url)
+    }
+
+    pub fn query(&self, url: &str) -> RequestBuilder {
+        RequestBuilder::new(QUERY.clone(), url)
     }
 
     pub fn request(&self, method: http::Method, url: &str) -> RequestBuilder {

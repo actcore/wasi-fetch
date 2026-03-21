@@ -232,8 +232,8 @@ pub(crate) async fn send_raw(
     let mut resp_headers = HeaderMap::new();
     for (name, value) in resp_fields.copy_all() {
         if let (Ok(hn), Ok(hv)) = (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_bytes(&value),
+            HeaderName::try_from(name),
+            HeaderValue::try_from(value),
         ) {
             resp_headers.append(hn, hv);
         }
