@@ -1,9 +1,11 @@
-use http::{HeaderMap, HeaderName, HeaderValue, Method, Uri};
+use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
 use wasip3::http::types::{
     ErrorCode, Fields, Request, RequestOptions, Response as WasiResponse, Scheme,
 };
 
 use crate::{Body, Error};
+
+const DEFAULT_REDIRECT_LIMIT: u8 = 10;
 
 /// Builder for an HTTP request.
 pub struct RequestBuilder {
@@ -12,6 +14,7 @@ pub struct RequestBuilder {
     headers: HeaderMap,
     body: Option<Vec<u8>>,
     timeout_ms: Option<u64>,
+    redirect_limit: u8,
 }
 
 impl RequestBuilder {
@@ -22,6 +25,7 @@ impl RequestBuilder {
             headers: HeaderMap::new(),
             body: None,
             timeout_ms: None,
+            redirect_limit: DEFAULT_REDIRECT_LIMIT,
         }
     }
 
@@ -67,23 +71,115 @@ impl RequestBuilder {
         self
     }
 
+    /// Set maximum number of redirects to follow. Default is 10. Set to 0 to disable.
+    pub fn redirect_limit(mut self, max: u8) -> Self {
+        self.redirect_limit = max;
+        self
+    }
+
     /// Send the request and return an `http::Response<Body>`.
     pub async fn send(self) -> Result<http::Response<Body>, Error> {
-        let mut builder = http::Request::builder().method(self.method).uri(&self.url);
+        let timeout_ms = self.timeout_ms;
+        let redirect_limit = self.redirect_limit;
+        let original_body = self.body.clone();
 
-        if let Some(headers) = builder.headers_mut() {
-            *headers = self.headers;
+        let mut method = self.method;
+        let mut current_url: Uri = self
+            .url
+            .parse()
+            .map_err(|e| Error::Url(format!("Invalid URL '{}': {e}", self.url)))?;
+        let headers = self.headers;
+        let body = self.body;
+
+        let mut redirects = 0u8;
+
+        loop {
+            let mut builder = http::Request::builder()
+                .method(method.clone())
+                .uri(&current_url);
+
+            if let Some(h) = builder.headers_mut() {
+                *h = headers.clone();
+            }
+
+            // Don't send body on redirected GET/HEAD
+            let req_body = if redirects == 0 {
+                body.clone().unwrap_or_default()
+            } else if method == Method::GET || method == Method::HEAD {
+                Vec::new()
+            } else {
+                original_body.clone().unwrap_or_default()
+            };
+
+            let request = builder
+                .body(req_body)
+                .map_err(|e| Error::Url(format!("Failed to build request: {e}")))?;
+
+            let response = send_raw(request, timeout_ms).await?;
+
+            let status = response.status();
+
+            if redirect_limit > 0 && status.is_redirection() {
+                redirects += 1;
+                if redirects > redirect_limit {
+                    return Err(Error::Transport("Too many redirects".to_string()));
+                }
+
+                if let Some(location) = response.headers().get(http::header::LOCATION) {
+                    let location_str = location.to_str().map_err(|e| {
+                        Error::Transport(format!("Invalid Location header: {e}"))
+                    })?;
+
+                    current_url = resolve_redirect(&current_url, location_str)?;
+
+                    // 303 See Other: change method to GET
+                    if status == StatusCode::SEE_OTHER {
+                        method = Method::GET;
+                    }
+                    continue;
+                }
+            }
+
+            return Ok(response);
         }
-
-        let request = builder
-            .body(self.body.unwrap_or_default())
-            .map_err(|e| Error::Url(format!("Failed to build request: {e}")))?;
-
-        send_raw(request, self.timeout_ms).await
     }
 }
 
-/// Send an `http::Request<Vec<u8>>` over wasip3 HTTP transport.
+/// Resolve a redirect Location against the current URI.
+fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
+    // Absolute URI
+    if location.contains("://") {
+        return location
+            .parse()
+            .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")));
+    }
+
+    // Protocol-relative (//host/path)
+    if let Some(rest) = location.strip_prefix("//") {
+        let scheme = base.scheme_str().unwrap_or("https");
+        return format!("{scheme}://{rest}")
+            .parse()
+            .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")));
+    }
+
+    // Relative path — keep scheme + authority from base
+    let path = if location.starts_with('/') {
+        location.to_string()
+    } else {
+        let base_path = base.path();
+        let parent = base_path.rfind('/').map_or("", |i| &base_path[..=i]);
+        format!("{parent}{location}")
+    };
+
+    let mut parts = base.clone().into_parts();
+    parts.path_and_query = Some(
+        path.parse()
+            .map_err(|e| Error::Url(format!("Invalid redirect path: {e}")))?,
+    );
+    Uri::from_parts(parts).map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")))
+}
+
+/// Send an `http::Request<Vec<u8>>` over wasip3 HTTP transport (no redirect handling).
 pub(crate) async fn send_raw(
     request: http::Request<Vec<u8>>,
     timeout_ms: Option<u64>,
