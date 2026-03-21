@@ -1,0 +1,23 @@
+[package]
+name = "wasi-fetch"
+version = "0.1.0"
+edition = "2024"
+description = "Ergonomic HTTP client for WebAssembly components (wasip2/wasip3)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/actcore/wasi-fetch"
+keywords = ["wasm", "wasi", "http", "fetch", "component-model"]
+categories = ["wasm", "web-programming::http-client"]
+readme = "README.md"
+
+[dependencies]
+http = "1"
+wasip3 = "0.4"
+wit-bindgen = { version = "0.54.0", features = ["async-spawn"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+http-body = "1.0.1"
+bytes = "1.11.1"
+flume = "0.12.0"
+
+[lib]
+crate-type = ["rlib"]
