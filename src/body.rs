@@ -11,9 +11,8 @@ type WasiStream = wasip3::wit_bindgen::StreamReader<u8>;
 
 const CHUNK_SIZE: usize = 16384;
 
-fn new_trailers() -> wasip3::wit_bindgen::FutureReader<
-    Result<Option<wasip3::http::types::Fields>, ErrorCode>,
-> {
+fn new_trailers()
+-> wasip3::wit_bindgen::FutureReader<Result<Option<wasip3::http::types::Fields>, ErrorCode>> {
     wasip3::wit_future::new::<Result<Option<wasip3::http::types::Fields>, ErrorCode>>(|| Ok(None)).1
 }
 

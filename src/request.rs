@@ -127,9 +127,9 @@ impl RequestBuilder {
                 }
 
                 if let Some(location) = response.headers().get(http::header::LOCATION) {
-                    let location_str = location.to_str().map_err(|e| {
-                        Error::Transport(format!("Invalid Location header: {e}"))
-                    })?;
+                    let location_str = location
+                        .to_str()
+                        .map_err(|e| Error::Transport(format!("Invalid Location header: {e}")))?;
 
                     current_url = resolve_redirect(&current_url, location_str)?;
 
@@ -232,10 +232,7 @@ pub(crate) async fn send_raw(
     let resp_fields = wasi_response.get_headers();
     let mut resp_headers = HeaderMap::new();
     for (name, value) in resp_fields.copy_all() {
-        if let (Ok(hn), Ok(hv)) = (
-            HeaderName::try_from(name),
-            HeaderValue::try_from(value),
-        ) {
+        if let (Ok(hn), Ok(hv)) = (HeaderName::try_from(name), HeaderValue::try_from(value)) {
             resp_headers.append(hn, hv);
         }
     }

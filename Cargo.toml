@@ -2,7 +2,7 @@
 name = "wasi-fetch"
 version = "0.1.0"
 edition = "2024"
-description = "Ergonomic HTTP client for WebAssembly components (wasip2/wasip3)"
+description = "Ergonomic HTTP client for WebAssembly components (wasip3)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/actcore/wasi-fetch"
 keywords = ["wasm", "wasi", "http", "fetch", "component-model"]
