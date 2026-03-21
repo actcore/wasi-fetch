@@ -147,36 +147,15 @@ impl RequestBuilder {
 
 /// Resolve a redirect Location against the current URI.
 fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
-    // Absolute URI
-    if location.contains("://") {
-        return location
-            .parse()
-            .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")));
-    }
-
-    // Protocol-relative (//host/path)
-    if let Some(rest) = location.strip_prefix("//") {
-        let scheme = base.scheme_str().unwrap_or("https");
-        return format!("{scheme}://{rest}")
-            .parse()
-            .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")));
-    }
-
-    // Relative path — keep scheme + authority from base
-    let path = if location.starts_with('/') {
-        location.to_string()
-    } else {
-        let base_path = base.path();
-        let parent = base_path.rfind('/').map_or("", |i| &base_path[..=i]);
-        format!("{parent}{location}")
-    };
-
-    let mut parts = base.clone().into_parts();
-    parts.path_and_query = Some(
-        path.parse()
-            .map_err(|e| Error::Url(format!("Invalid redirect path: {e}")))?,
-    );
-    Uri::from_parts(parts).map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")))
+    let base_url = url::Url::parse(&base.to_string())
+        .map_err(|e| Error::Url(format!("Invalid base URL: {e}")))?;
+    let resolved = base_url
+        .join(location)
+        .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")))?;
+    resolved
+        .as_str()
+        .parse()
+        .map_err(|e| Error::Url(format!("Invalid redirect URL: {e}")))
 }
 
 /// Send an `http::Request<Vec<u8>>` over wasip3 HTTP transport (no redirect handling).
