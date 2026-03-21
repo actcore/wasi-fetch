@@ -13,7 +13,7 @@ pub struct RequestBuilder {
     url: String,
     headers: HeaderMap,
     body: Option<Vec<u8>>,
-    timeout_ms: Option<u64>,
+    timeout: Option<std::time::Duration>,
     redirect_limit: u8,
 }
 
@@ -24,7 +24,7 @@ impl RequestBuilder {
             url: url.to_string(),
             headers: HeaderMap::new(),
             body: None,
-            timeout_ms: None,
+            timeout: None,
             redirect_limit: DEFAULT_REDIRECT_LIMIT,
         }
     }
@@ -65,9 +65,9 @@ impl RequestBuilder {
         self
     }
 
-    /// Set request timeout in milliseconds.
-    pub fn timeout_ms(mut self, ms: u64) -> Self {
-        self.timeout_ms = Some(ms);
+    /// Set request timeout.
+    pub fn timeout(mut self, duration: std::time::Duration) -> Self {
+        self.timeout = Some(duration);
         self
     }
 
@@ -79,7 +79,7 @@ impl RequestBuilder {
 
     /// Send the request and return an `http::Response<Body>`.
     pub async fn send(self) -> Result<http::Response<Body>, Error> {
-        let timeout_ms = self.timeout_ms;
+        let timeout = self.timeout;
         let redirect_limit = self.redirect_limit;
         let original_body = self.body.clone();
 
@@ -115,7 +115,7 @@ impl RequestBuilder {
                 .body(req_body)
                 .map_err(|e| Error::Url(format!("Failed to build request: {e}")))?;
 
-            let response = send_raw(request, timeout_ms).await?;
+            let response = send_raw(request, timeout).await?;
 
             let status = response.status();
 
@@ -161,7 +161,7 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
 /// Send an `http::Request<Vec<u8>>` over wasip3 HTTP transport (no redirect handling).
 pub(crate) async fn send_raw(
     request: http::Request<Vec<u8>>,
-    timeout_ms: Option<u64>,
+    timeout: Option<std::time::Duration>,
 ) -> Result<http::Response<Body>, Error> {
     let (parts, body) = request.into_parts();
 
@@ -203,8 +203,8 @@ pub(crate) async fn send_raw(
         wasip3::wit_future::new::<Result<Option<Fields>, ErrorCode>>(|| Ok(None));
 
     // Timeout
-    let opts = timeout_ms.map(|ms| {
-        let ns = ms * 1_000_000;
+    let opts = timeout.map(|d| {
+        let ns = d.as_nanos() as u64;
         let opts = RequestOptions::new();
         let _ = opts.set_connect_timeout(Some(ns));
         let _ = opts.set_first_byte_timeout(Some(ns));
