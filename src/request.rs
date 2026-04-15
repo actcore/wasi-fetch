@@ -15,6 +15,7 @@ pub struct RequestBuilder {
     headers: HeaderMap,
     body: Option<Bytes>,
     timeout: Option<std::time::Duration>,
+    between_bytes_timeout: Option<std::time::Duration>,
     redirect_limit: u8,
 }
 
@@ -26,6 +27,7 @@ impl RequestBuilder {
             headers: HeaderMap::new(),
             body: None,
             timeout: None,
+            between_bytes_timeout: None,
             redirect_limit: DEFAULT_REDIRECT_LIMIT,
         }
     }
@@ -66,9 +68,18 @@ impl RequestBuilder {
         self
     }
 
-    /// Set request timeout.
+    /// Set request timeout (applies to connect and first-byte).
     pub fn timeout(mut self, duration: std::time::Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set between-bytes timeout (max idle time between body frames).
+    ///
+    /// Useful for SSE/streaming responses where the server may keep the
+    /// connection open indefinitely after sending data.
+    pub fn between_bytes_timeout(mut self, duration: std::time::Duration) -> Self {
+        self.between_bytes_timeout = Some(duration);
         self
     }
 
@@ -81,6 +92,7 @@ impl RequestBuilder {
     /// Send the request and return an `http::Response<Body>`.
     pub async fn send(self) -> Result<http::Response<Body>, Error> {
         let timeout = self.timeout;
+        let between_bytes_timeout = self.between_bytes_timeout;
         let redirect_limit = self.redirect_limit;
         let original_body = self.body.clone();
 
@@ -116,7 +128,7 @@ impl RequestBuilder {
                 .body(req_body)
                 .map_err(|e| Error::Url(format!("Failed to build request: {e}")))?;
 
-            let response = send_raw(request, timeout).await?;
+            let response = send_raw(request, timeout, between_bytes_timeout).await?;
 
             let status = response.status();
 
@@ -163,6 +175,7 @@ fn resolve_redirect(base: &Uri, location: &str) -> Result<Uri, Error> {
 pub(crate) async fn send_raw(
     request: http::Request<Bytes>,
     timeout: Option<std::time::Duration>,
+    between_bytes_timeout: Option<std::time::Duration>,
 ) -> Result<http::Response<Body>, Error> {
     let (parts, body) = request.into_parts();
 
@@ -204,13 +217,20 @@ pub(crate) async fn send_raw(
         wasip3::wit_future::new::<Result<Option<Fields>, ErrorCode>>(|| Ok(None));
 
     // Timeout
-    let opts = timeout.map(|d| {
-        let ns = d.as_nanos() as u64;
+    let opts = if timeout.is_some() || between_bytes_timeout.is_some() {
         let opts = RequestOptions::new();
-        let _ = opts.set_connect_timeout(Some(ns));
-        let _ = opts.set_first_byte_timeout(Some(ns));
-        opts
-    });
+        if let Some(d) = timeout {
+            let ns = d.as_nanos() as u64;
+            let _ = opts.set_connect_timeout(Some(ns));
+            let _ = opts.set_first_byte_timeout(Some(ns));
+        }
+        if let Some(d) = between_bytes_timeout {
+            let _ = opts.set_between_bytes_timeout(Some(d.as_nanos() as u64));
+        }
+        Some(opts)
+    } else {
+        None
+    };
 
     // Build WASI request
     let (wasi_request, _) = Request::new(fields, body_stream, trailers_reader, opts);

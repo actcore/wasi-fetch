@@ -73,5 +73,5 @@ impl Default for Client {
 ///
 /// Low-level function. Prefer `Client` builder for ergonomic usage.
 pub async fn send(request: http::Request<bytes::Bytes>) -> Result<http::Response<Body>, Error> {
-    request::send_raw(request, None).await
+    request::send_raw(request, None, None).await
 }
