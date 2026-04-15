@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-04-16
+
+### Added
+
+- `between_bytes_timeout()` builder method for controlling max idle time between HTTP body frames — useful for reading SSE/streaming responses without hanging on keep-alive connections
+
+### Changed
+
+- Upgraded `wit-bindgen` from 0.55 to 0.56
+
 ## [0.1.1] - 2026-04-14
 
 ### Changed
@@ -25,5 +35,6 @@ Ergonomic HTTP client for WebAssembly components. Wraps wasip3 HTTP behind a req
 - Low-level `wasi_fetch::send(http::Request<Bytes>)` for direct use
 - CI pipeline, release workflow for crates.io, pre-commit hooks
 
+[0.1.2]: https://github.com/actcore/wasi-fetch/compare/0.1.1..0.1.2
 [0.1.1]: https://github.com/actcore/wasi-fetch/compare/0.1.0..0.1.1
 [0.1.0]: https://github.com/actcore/wasi-fetch/tree/0.1.0

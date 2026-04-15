@@ -1,6 +1,6 @@
 [package]
 name = "wasi-fetch"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Ergonomic HTTP client for WebAssembly components (wasip3)"
 license = "MIT OR Apache-2.0"
