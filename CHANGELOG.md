@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-04-19
+
+### Changed
+
+- Upgraded `wit-bindgen` from 0.56 to 0.57 and `wasip3` from 0.5 to 0.6. Consumers that use `wasi-fetch` alongside their own `wit_bindgen::generate!` must align on `wit-bindgen = "0.57"`; mismatched versions silently hang outbound POST requests because the generated `wasi:http` body-stream bindings diverge.
+
 ## [0.1.2] - 2026-04-16
 
 ### Added

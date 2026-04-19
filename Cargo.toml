@@ -1,6 +1,6 @@
 [package]
 name = "wasi-fetch"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2024"
 description = "Ergonomic HTTP client for WebAssembly components (wasip3)"
 license = "MIT OR Apache-2.0"
@@ -11,8 +11,8 @@ readme = "README.md"
 
 [dependencies]
 http = "1.4"
-wasip3 = "0.5"
-wit-bindgen = { version = "0.56", features = ["async-spawn"] }
+wasip3 = "0.6"
+wit-bindgen = { version = "0.57", features = ["async-spawn"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 http-body = "1.0.1"
