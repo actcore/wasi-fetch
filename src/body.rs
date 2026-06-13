@@ -1,68 +1,37 @@
 use bytes::{Bytes, BytesMut};
-use http_body::Frame;
+use http_body::{Body as HttpBody, Frame};
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
-use std::task::{Context, Poll, Waker};
-use wasip3::http::types::ErrorCode;
+use std::task::{Context, Poll};
+use wasip3::http_compat::IncomingResponseBody;
 
 use crate::Error;
-
-type WasiStream = wasip3::wit_bindgen::StreamReader<u8>;
-
-const CHUNK_SIZE: usize = 16384;
-
-fn new_trailers()
--> wasip3::wit_bindgen::FutureReader<Result<Option<wasip3::http::types::Fields>, ErrorCode>> {
-    wasip3::wit_future::new::<Result<Option<wasip3::http::types::Fields>, ErrorCode>>(|| Ok(None)).1
-}
-
-/// Shared waker slot — background reader wakes poll_frame after each send.
-type SharedWaker = Arc<Mutex<Option<Waker>>>;
 
 /// Streaming HTTP response body.
 ///
 /// Implements [`http_body::Body`] for ecosystem compatibility.
 /// Also provides convenience async methods: `bytes()`, `text()`, `json()`, `chunk()`.
 ///
-/// **Important:** Use either the async methods OR `poll_frame`, not both.
+/// The streaming path wraps wasip3's [`IncomingResponseBody`], which reads the
+/// underlying `wasi:http` body stream inline (no background task), so the body
+/// is driven by whatever executor polls it.
 pub struct Body {
     inner: BodyInner,
-    _trailers:
-        wasip3::wit_bindgen::FutureReader<Result<Option<wasip3::http::types::Fields>, ErrorCode>>,
 }
 
 enum BodyInner {
-    /// Direct async stream with reusable buffers.
-    Stream {
-        stream: WasiStream,
-        buf: Vec<u8>,
-        acc: BytesMut,
-    },
-    /// Channel-based for poll_frame.
-    Channel {
-        rx: flume::Receiver<Option<Bytes>>,
-        waker: SharedWaker,
-    },
-    /// Pre-buffered data.
+    /// Streaming response body backed by the `wasi:http` stream.
+    Incoming(IncomingResponseBody),
+    /// Pre-buffered data (request bodies, `from_bytes`).
     Buffered(Option<Bytes>),
-    /// Fully consumed.
+    /// Fully consumed / empty.
     Done,
 }
 
 impl Body {
-    pub(crate) fn from_wasi(
-        stream: WasiStream,
-        trailers: wasip3::wit_bindgen::FutureReader<
-            Result<Option<wasip3::http::types::Fields>, ErrorCode>,
-        >,
-    ) -> Self {
+    /// Wrap a wasip3 incoming response body.
+    pub(crate) fn from_incoming(incoming: IncomingResponseBody) -> Self {
         Self {
-            inner: BodyInner::Stream {
-                stream,
-                buf: Vec::with_capacity(CHUNK_SIZE),
-                acc: BytesMut::with_capacity(CHUNK_SIZE * 2),
-            },
-            _trailers: trailers,
+            inner: BodyInner::Incoming(incoming),
         }
     }
 
@@ -70,7 +39,6 @@ impl Body {
     pub fn empty() -> Self {
         Self {
             inner: BodyInner::Done,
-            _trailers: new_trailers(),
         }
     }
 
@@ -81,72 +49,52 @@ impl Body {
         } else {
             BodyInner::Buffered(Some(Bytes::from(data)))
         };
-        Self {
-            inner,
-            _trailers: new_trailers(),
-        }
+        Self { inner }
     }
 
-    /// Read the next chunk from the body stream.
+    /// Read the next data chunk from the body stream.
     ///
-    /// Returns `None` when the body is fully consumed.
+    /// Returns `None` when the body is fully consumed. Trailer frames are
+    /// skipped (use `poll_frame` if you need trailers).
     pub async fn chunk(&mut self) -> Option<Bytes> {
         match &mut self.inner {
-            BodyInner::Stream { stream, buf, acc } => {
-                let read_buf = std::mem::take(buf);
-                let (result, mut chunk) = stream.read(read_buf).await;
-                match result {
-                    wasip3::wit_bindgen::StreamResult::Complete(_) if !chunk.is_empty() => {
-                        acc.extend_from_slice(&chunk);
-                        chunk.clear();
-                        *buf = chunk;
-                        Some(acc.split().freeze())
-                    }
-                    _ => {
+            BodyInner::Incoming(incoming) => loop {
+                let frame =
+                    std::future::poll_fn(|cx| Pin::new(&mut *incoming).poll_frame(cx)).await;
+                match frame {
+                    Some(Ok(frame)) => match frame.into_data() {
+                        Ok(data) => return Some(data),
+                        // Trailers frame — skip and keep reading.
+                        Err(_) => continue,
+                    },
+                    Some(Err(_)) | None => {
                         self.inner = BodyInner::Done;
-                        None
+                        return None;
                     }
                 }
-            }
+            },
             BodyInner::Buffered(data) => {
                 let bytes = data.take();
                 self.inner = BodyInner::Done;
                 bytes
             }
-            _ => None,
+            BodyInner::Done => None,
         }
     }
 
     /// Consume the entire body as bytes.
     pub async fn bytes(mut self) -> Bytes {
-        // Optimized path for Stream: read directly into acc without split overhead
-        if let BodyInner::Stream {
-            mut stream,
-            mut buf,
-            mut acc,
-        } = self.inner
-        {
-            self.inner = BodyInner::Done;
-            loop {
-                let (result, mut chunk) = stream.read(buf).await;
-                match result {
-                    wasip3::wit_bindgen::StreamResult::Complete(_) if !chunk.is_empty() => {
-                        acc.extend_from_slice(&chunk);
-                        chunk.clear();
-                        buf = chunk;
-                    }
-                    _ => break,
+        match &mut self.inner {
+            BodyInner::Incoming(_) => {
+                let mut acc = BytesMut::new();
+                while let Some(chunk) = self.chunk().await {
+                    acc.extend_from_slice(&chunk);
                 }
+                acc.freeze()
             }
-            return acc.freeze();
+            BodyInner::Buffered(data) => data.take().unwrap_or_default(),
+            BodyInner::Done => Bytes::new(),
         }
-
-        // Buffered
-        if let BodyInner::Buffered(data) = &mut self.inner {
-            return data.take().unwrap_or_default();
-        }
-
-        Bytes::new()
     }
 
     /// Consume the entire body as a UTF-8 string.
@@ -160,60 +108,9 @@ impl Body {
         let body = self.bytes().await;
         serde_json::from_slice(&body).map_err(Error::Json)
     }
-
-    /// Move stream into a channel-based reader for poll_frame.
-    fn ensure_channel(&mut self) {
-        if !matches!(&self.inner, BodyInner::Stream { .. }) {
-            return;
-        }
-
-        let old = std::mem::replace(&mut self.inner, BodyInner::Done);
-        let BodyInner::Stream { mut stream, .. } = old else {
-            unreachable!()
-        };
-
-        let waker: SharedWaker = Arc::new(Mutex::new(None));
-        let waker_clone = waker.clone();
-
-        // bounded(1) = backpressure: reader blocks until consumer drains
-        let (tx, rx) = flume::bounded::<Option<Bytes>>(1);
-        self.inner = BodyInner::Channel {
-            rx,
-            waker: waker.clone(),
-        };
-
-        wit_bindgen::spawn(async move {
-            let mut buf = Vec::with_capacity(CHUNK_SIZE);
-            let mut acc = BytesMut::with_capacity(CHUNK_SIZE * 2);
-            loop {
-                let (result, mut chunk) = stream.read(buf).await;
-                match result {
-                    wasip3::wit_bindgen::StreamResult::Complete(_) if !chunk.is_empty() => {
-                        acc.extend_from_slice(&chunk);
-                        chunk.clear();
-                        buf = chunk;
-                        if tx.send_async(Some(acc.split().freeze())).await.is_err() {
-                            break;
-                        }
-                        // Wake the poll_frame consumer
-                        if let Some(w) = waker_clone.lock().unwrap().take() {
-                            w.wake();
-                        }
-                    }
-                    _ => {
-                        let _ = tx.send_async(None).await;
-                        if let Some(w) = waker_clone.lock().unwrap().take() {
-                            w.wake();
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-    }
 }
 
-impl http_body::Body for Body {
+impl HttpBody for Body {
     type Data = Bytes;
     type Error = Error;
 
@@ -221,38 +118,27 @@ impl http_body::Body for Body {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        // Handle Buffered variant directly
-        if let BodyInner::Buffered(data) = &mut self.inner {
-            let bytes = data.take();
-            self.inner = BodyInner::Done;
-            return match bytes {
-                Some(b) => Poll::Ready(Some(Ok(Frame::data(b)))),
-                None => Poll::Ready(None),
-            };
-        }
-
-        // Ensure we have a channel
-        self.ensure_channel();
-
-        let BodyInner::Channel { rx, waker } = &mut self.inner else {
-            return Poll::Ready(None);
-        };
-
-        match rx.try_recv() {
-            Ok(Some(chunk)) => Poll::Ready(Some(Ok(Frame::data(chunk)))),
-            Ok(None) => {
+        match &mut self.inner {
+            BodyInner::Incoming(incoming) => match Pin::new(incoming).poll_frame(cx) {
+                Poll::Ready(Some(Ok(frame))) => Poll::Ready(Some(Ok(frame))),
+                Poll::Ready(Some(Err(e))) => {
+                    Poll::Ready(Some(Err(Error::Transport(format!("{e:?}")))))
+                }
+                Poll::Ready(None) => {
+                    self.inner = BodyInner::Done;
+                    Poll::Ready(None)
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            BodyInner::Buffered(data) => {
+                let bytes = data.take();
                 self.inner = BodyInner::Done;
-                Poll::Ready(None)
+                match bytes {
+                    Some(b) => Poll::Ready(Some(Ok(Frame::data(b)))),
+                    None => Poll::Ready(None),
+                }
             }
-            Err(flume::TryRecvError::Empty) => {
-                // Save waker — background reader will wake us after next send
-                *waker.lock().unwrap() = Some(cx.waker().clone());
-                Poll::Pending
-            }
-            Err(flume::TryRecvError::Disconnected) => {
-                self.inner = BodyInner::Done;
-                Poll::Ready(None)
-            }
+            BodyInner::Done => Poll::Ready(None),
         }
     }
 

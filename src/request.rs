@@ -1,8 +1,8 @@
 use bytes::Bytes;
+use futures::join;
 use http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri};
-use wasip3::http::types::{
-    ErrorCode, Fields, Request, RequestOptions, Response as WasiResponse, Scheme,
-};
+use wasip3::http::types::{ErrorCode, Fields, Request, RequestOptions, Scheme};
+use wasip3::http_compat::{BodyWriter, http_from_wasi_response};
 
 use crate::{Body, Error};
 
@@ -201,22 +201,7 @@ pub(crate) async fn send_raw(
     let fields = Fields::from_list(&header_list)
         .map_err(|e| Error::Transport(format!("Invalid headers: {e:?}")))?;
 
-    // Body stream
-    let body_stream = if body.is_empty() {
-        None
-    } else {
-        let (mut writer, reader) = wasip3::wit_stream::new::<u8>();
-        wit_bindgen::spawn(async move {
-            writer.write_all(body.to_vec()).await;
-        });
-        Some(reader)
-    };
-
-    // Trailers (none)
-    let (_, trailers_reader) =
-        wasip3::wit_future::new::<Result<Option<Fields>, ErrorCode>>(|| Ok(None));
-
-    // Timeout
+    // Timeout / between-bytes options
     let opts = if timeout.is_some() || between_bytes_timeout.is_some() {
         let opts = RequestOptions::new();
         if let Some(d) = timeout {
@@ -232,48 +217,50 @@ pub(crate) async fn send_raw(
         None
     };
 
-    // Build WASI request
-    let (wasi_request, _) = Request::new(fields, body_stream, trailers_reader, opts);
+    // Build the WASI request. A non-empty body is streamed concurrently with
+    // `send` via a BodyWriter (structured concurrency — no detached task); an
+    // empty body uses no body stream.
+    let (body_writer, wasi_request) = if body.is_empty() {
+        let (_, trailers) =
+            wasip3::wit_future::new::<Result<Option<Fields>, ErrorCode>>(|| Ok(None));
+        let (request, _) = Request::new(fields, None, trailers, opts);
+        (None, request)
+    } else {
+        let (writer, body_reader, trailers_reader) = BodyWriter::new();
+        let (request, _) = Request::new(fields, Some(body_reader), trailers_reader, opts);
+        (Some(writer), request)
+    };
+
     let _ = wasi_request.set_method(&to_wasi_method(&parts.method));
     let _ = wasi_request.set_scheme(Some(&scheme));
-
     if let Some(authority) = uri.authority() {
         let _ = wasi_request.set_authority(Some(authority.as_str()));
     }
-
     let _ = wasi_request.set_path_with_query(uri.path_and_query().map(|pq| pq.as_str()));
 
-    // Send
-    let wasi_response = wasip3::http::client::send(wasi_request)
-        .await
-        .map_err(|e| Error::Transport(format!("{e:?}")))?;
-
-    // Read response headers
-    let resp_fields = wasi_response.get_headers();
-    let mut resp_headers = HeaderMap::new();
-    for (name, value) in resp_fields.copy_all() {
-        if let (Ok(hn), Ok(hv)) = (HeaderName::try_from(name), HeaderValue::try_from(value)) {
-            resp_headers.append(hn, hv);
+    // Send, writing the request body concurrently when present.
+    let wasi_response = match body_writer {
+        Some(writer) => {
+            let mut req_body = Body::from_bytes(body.to_vec());
+            let (response, _written) = join!(
+                wasip3::http::client::send(wasi_request),
+                writer.send_http_body(&mut req_body),
+            );
+            response
         }
+        None => wasip3::http::client::send(wasi_request).await,
     }
+    .map_err(|e| Error::Transport(format!("{e:?}")))?;
 
-    let status = wasi_response.get_status_code();
+    // Map the WASI response (status, headers, streaming body) into http::Response.
+    let (resp_parts, incoming) = http_from_wasi_response(wasi_response)
+        .map_err(|e| Error::Transport(format!("{e:?}")))?
+        .into_parts();
 
-    // Consume body as streaming
-    let (_, result_reader) = wasip3::wit_future::new::<Result<(), ErrorCode>>(|| Ok(()));
-    let (body_reader, trailers) = WasiResponse::consume_body(wasi_response, result_reader);
-
-    let body = Body::from_wasi(body_reader, trailers);
-
-    // Build http::Response
-    let mut builder = http::Response::builder().status(status);
-    if let Some(headers) = builder.headers_mut() {
-        *headers = resp_headers;
-    }
-
-    builder
-        .body(body)
-        .map_err(|e| Error::Transport(format!("Failed to build response: {e}")))
+    Ok(http::Response::from_parts(
+        resp_parts,
+        Body::from_incoming(incoming),
+    ))
 }
 
 fn to_wasi_method(m: &Method) -> wasip3::http::types::Method {
