@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-06-13
+
+### Changed
+
+- Rewrote the request/response internals on top of `wasip3::http_compat`:
+  response bodies use wasip3's `IncomingBody` (inline stream reads) and request
+  bodies stream via `BodyWriter` with structured concurrency. wasi-fetch no
+  longer spawns a background task (`wit_bindgen::spawn`), so it shares the host
+  component's single async runtime instead of coupling to a specific
+  `wit-bindgen` version — the version-alignment hazard described in 0.1.3 is
+  gone.
+- Moved to the WASI 0.3 (final) toolchain via `wasip3` 0.7.0 (`wasi:http@0.3.0`).
+  Components now require a host implementing `wasi:http@0.3.0` (e.g. Wasmtime
+  46+); they will not instantiate on hosts shipping the `wasi:http@0.3.0-rc`
+  interface (e.g. Wasmtime 45).
+- The public API (`Client`, `RequestBuilder`, `Body`, `Error`) is unchanged.
+
+### Removed
+
+- Dropped the direct `wit-bindgen` and `flume` dependencies.
+
 ## [0.1.3] - 2026-04-19
 
 ### Changed
