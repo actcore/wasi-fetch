@@ -48,3 +48,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: cargo fmt -- --check
+
+  forbidden:
+    name: Crates std has replaced
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # `cfg-if` and `assert_matches` are refused — `std::cfg_select!` and
+      # `std::assert_matches!` replace them and have been stable since 1.96.
+      # No toolchain: the check reads our manifests, not the lockfile.
+      - run: python3 scripts/forbidden-crates.py

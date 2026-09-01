@@ -9,6 +9,11 @@ hooks = [
 [[repos]]
 repo = "local"
 hooks = [
+    # `cfg-if` and `assert_matches` are refused: `std::cfg_select!` and
+    # `std::assert_matches!` have been stable since Rust 1.96, so the crates
+    # buy nothing. Manifests only — see the script for why this is not a
+    # cargo-deny ban.
+    { id = "forbidden-crates", name = "no crates std has replaced", entry = "python3 scripts/forbidden-crates.py", language = "system", pass_filenames = false, always_run = true },
     { id = "cargo-clippy", name = "cargo clippy", entry = "cargo clippy -- -D warnings", language = "system", pass_filenames = false, always_run = true },
     { id = "cargo-fmt", name = "cargo fmt", entry = "cargo fmt -- --check", language = "system", pass_filenames = false, always_run = true },
 ]
